@@ -809,6 +809,38 @@ async def health(request):
         "token_hint": MCP_TOKEN[:8] + "..." + MCP_TOKEN[-4:],
     })
 
+async def debug_endpoint(request):
+    """Endpoint de diagnòstic — mostra el JSON RAW de Garmin per a cada mètode."""
+    try:
+        api = get_garmin()
+        d = today()
+        out = {}
+
+        raw_ts = safe_garmin(api.get_training_status, d, default={})
+        out["training_status_raw"] = raw_ts
+
+        raw_rhr = safe_garmin(api.get_rhr_day, d, default={})
+        out["rhr_day_raw"] = raw_rhr
+
+        raw_hrv = safe_garmin(api.get_hrv_data, d, default={})
+        out["hrv_data_raw"] = raw_hrv
+
+        raw_sleep = safe_garmin(api.get_sleep_data, d, default={})
+        # Sleep pot ser molt gran, agafem només les claus principals
+        if isinstance(raw_sleep, dict):
+            out["sleep_keys"] = list(raw_sleep.keys())
+            daily = raw_sleep.get("dailySleepDTO") or {}
+            out["sleep_daily_keys"] = list(daily.keys()) if isinstance(daily, dict) else []
+
+        raw_stats = safe_garmin(api.get_stats, d, default={})
+        if isinstance(raw_stats, dict):
+            out["stats_keys"] = list(raw_stats.keys())
+
+        return JSONResponse(out)
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "traceback": traceback.format_exc()}, status_code=500)
+
 # ─── Endpoints HTTP directes (per al dashboard web) ──────────────────────────
 # Nota: les funcions estan decorades amb @mcp.tool, per tant les cridem
 # passant els arguments de forma posicional per evitar conflictes de wrapping.
@@ -851,6 +883,7 @@ app = Starlette(
     routes=[
         Route("/", health),
         Route("/health", health),
+        Route("/debug", debug_endpoint),
         Route("/tools/{tool_name}", tool_endpoint),
         Mount("/", app=mcp_app),
     ]
