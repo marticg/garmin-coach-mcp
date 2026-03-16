@@ -797,6 +797,7 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
 
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
+from starlette.middleware.cors import CORSMiddleware
 
 async def health(request):
     return JSONResponse({
@@ -807,6 +808,37 @@ async def health(request):
         "token_hint": MCP_TOKEN[:8] + "..." + MCP_TOKEN[-4:],
     })
 
+# ─── Endpoints HTTP directes (per al dashboard web) ──────────────────────────
+TOOL_MAP = {
+    "get_sleep":           lambda p: get_sleep(p.get("date","")),
+    "get_sleep_summary":   lambda p: get_sleep_summary(int(p.get("days",7))),
+    "get_hrv":             lambda p: get_hrv(int(p.get("days",7))),
+    "get_today_stats":     lambda p: get_today_stats(),
+    "get_activities":      lambda p: get_activities(int(p.get("days",7)), p.get("activity_type","")),
+    "get_steps":           lambda p: get_steps(int(p.get("days",7))),
+    "get_body_battery":    lambda p: get_body_battery(int(p.get("days",7))),
+    "get_stress":          lambda p: get_stress(int(p.get("days",7))),
+    "get_heart_rate":      lambda p: get_heart_rate(int(p.get("days",7))),
+    "get_vo2max":          lambda p: get_vo2max(),
+    "get_training_status": lambda p: get_training_status(),
+    "get_training_load":   lambda p: get_training_load(int(p.get("days",28))),
+    "get_weight":          lambda p: get_weight(int(p.get("days",30))),
+    "get_user_profile":    lambda p: get_user_profile(),
+    "get_full_snapshot":   lambda p: get_full_snapshot(int(p.get("days",7))),
+}
+
+async def tool_endpoint(request):
+    tool_name = request.path_params.get("tool_name")
+    if tool_name not in TOOL_MAP:
+        return JSONResponse({"error": f"Eina '{tool_name}' no trobada"}, status_code=404)
+    try:
+        params = dict(request.query_params)
+        params.pop("token", None)  # treu el token dels params
+        result = TOOL_MAP[tool_name](params)
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 # Construeix l'app amb el servidor MCP muntat
 mcp_app = mcp.http_app(path="/mcp")
 
@@ -814,11 +846,20 @@ app = Starlette(
     routes=[
         Route("/", health),
         Route("/health", health),
+        Route("/tools/{tool_name}", tool_endpoint),
         Mount("/", app=mcp_app),
     ]
 )
 
 app.add_middleware(TokenAuthMiddleware)
+
+# CORS — permet que el dashboard web cridi el servidor
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
     import uvicorn
