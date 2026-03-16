@@ -809,34 +809,38 @@ async def health(request):
     })
 
 # ─── Endpoints HTTP directes (per al dashboard web) ──────────────────────────
-TOOL_MAP = {
-    "get_sleep":           lambda p: get_sleep(p.get("date","")),
-    "get_sleep_summary":   lambda p: get_sleep_summary(int(p.get("days",7))),
-    "get_hrv":             lambda p: get_hrv(int(p.get("days",7))),
-    "get_today_stats":     lambda p: get_today_stats(),
-    "get_activities":      lambda p: get_activities(int(p.get("days",7)), p.get("activity_type","")),
-    "get_steps":           lambda p: get_steps(int(p.get("days",7))),
-    "get_body_battery":    lambda p: get_body_battery(int(p.get("days",7))),
-    "get_stress":          lambda p: get_stress(int(p.get("days",7))),
-    "get_heart_rate":      lambda p: get_heart_rate(int(p.get("days",7))),
-    "get_vo2max":          lambda p: get_vo2max(),
-    "get_training_status": lambda p: get_training_status(),
-    "get_training_load":   lambda p: get_training_load(int(p.get("days",28))),
-    "get_weight":          lambda p: get_weight(int(p.get("days",30))),
-    "get_user_profile":    lambda p: get_user_profile(),
-    "get_full_snapshot":   lambda p: get_full_snapshot(int(p.get("days",7))),
-}
+# Nota: les funcions estan decorades amb @mcp.tool, per tant les cridem
+# passant els arguments de forma posicional per evitar conflictes de wrapping.
+
+def _i(params, key, default):
+    try: return int(params.get(key, default))
+    except: return default
 
 async def tool_endpoint(request):
     tool_name = request.path_params.get("tool_name")
-    if tool_name not in TOOL_MAP:
-        return JSONResponse({"error": f"Eina '{tool_name}' no trobada"}, status_code=404)
+    params = dict(request.query_params)
+    params.pop("token", None)
     try:
-        params = dict(request.query_params)
-        params.pop("token", None)  # treu el token dels params
-        result = TOOL_MAP[tool_name](params)
+        if   tool_name == "get_sleep":           result = get_sleep(params.get("date", ""))
+        elif tool_name == "get_sleep_summary":   result = get_sleep_summary(_i(params, "days", 7))
+        elif tool_name == "get_hrv":             result = get_hrv(_i(params, "days", 7))
+        elif tool_name == "get_today_stats":     result = get_today_stats()
+        elif tool_name == "get_activities":      result = get_activities(_i(params, "days", 7), params.get("activity_type", ""))
+        elif tool_name == "get_steps":           result = get_steps(_i(params, "days", 7))
+        elif tool_name == "get_body_battery":    result = get_body_battery(_i(params, "days", 7))
+        elif tool_name == "get_stress":          result = get_stress(_i(params, "days", 7))
+        elif tool_name == "get_heart_rate":      result = get_heart_rate(_i(params, "days", 7))
+        elif tool_name == "get_vo2max":          result = get_vo2max()
+        elif tool_name == "get_training_status": result = get_training_status()
+        elif tool_name == "get_training_load":   result = get_training_load(_i(params, "days", 28))
+        elif tool_name == "get_weight":          result = get_weight(_i(params, "days", 30))
+        elif tool_name == "get_user_profile":    result = get_user_profile()
+        elif tool_name == "get_full_snapshot":   result = get_full_snapshot(_i(params, "days", 7))
+        else: return JSONResponse({"error": f"Eina desconeguda: {tool_name}"}, status_code=404)
         return JSONResponse(result)
     except Exception as e:
+        import traceback
+        print(f"[TOOL ERR] {tool_name}: {traceback.format_exc()}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # Construeix l'app amb el servidor MCP muntat
