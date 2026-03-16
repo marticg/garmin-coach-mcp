@@ -330,7 +330,7 @@ def get_today_stats() -> dict:
 
     stats = safe_garmin(api.get_stats, d, default={})
     bb    = safe_garmin(api.get_body_battery, d, d, default=[])
-    hr    = safe_garmin(api.get_rhr_day, d, d, default=[])
+    hr    = safe_garmin(api.get_rhr_day, d, default=[])
 
     result = {
         "data":  d,
@@ -450,7 +450,7 @@ def get_heart_rate(days: int = 7) -> dict:
     """
     api = get_garmin()
     start = days_ago(days)
-    raw = safe_garmin(api.get_rhr_day, start, today(), default=[])
+    raw = safe_garmin(api.get_rhr_day, today(), default=[])
 
     if not raw or not isinstance(raw, list):
         return {"error": "No hi ha dades de FC en repòs", "perfil": profile_context()}
@@ -537,7 +537,7 @@ def get_training_status() -> dict:
     """
     api = get_garmin()
     ts_raw = safe_garmin(api.get_training_status, today(), default={})
-    tl_raw = safe_garmin(api.get_training_load, today(), default={})
+    tl_raw = safe_garmin(api.get_training_status, today(), default={})
 
     result = {"perfil": profile_context()}
 
@@ -550,13 +550,14 @@ def get_training_status() -> dict:
             "llindar_lactat_fc":      ts.get("lactateThresholdHeartRate"),
         })
 
-    if tl_raw and isinstance(tl_raw, dict):
-        tl = tl_raw.get("trainingLoadDTO") or tl_raw
+    # Extraiem càrrega d'entrenament de trainingStatusDTO (ja inclòs a ts_raw)
+    if ts_raw and isinstance(ts_raw, dict):
+        ts2 = ts_raw.get("trainingStatusDTO") or ts_raw
         result.update({
-            "carrega_7dies":   tl.get("weeklyTrainingLoad") or tl.get("sevenDayLoad"),
-            "carrega_aguda":   tl.get("acuteLoad"),
-            "carrega_cronica": tl.get("chronicLoad"),
-            "ratio_carrega":   tl.get("loadRatio"),
+            "carrega_7dies":   ts2.get("weeklyTrainingLoad") or ts2.get("sevenDayLoad") or ts2.get("trainingLoad"),
+            "carrega_aguda":   ts2.get("acuteLoad") or ts2.get("acuteTrainingLoad"),
+            "carrega_cronica": ts2.get("chronicLoad") or ts2.get("chronicTrainingLoad"),
+            "ratio_carrega":   ts2.get("loadRatio") or ts2.get("trainingLoadRatio"),
         })
 
     # Interpretació de la ràtio
