@@ -137,10 +137,12 @@ def get_sleep(date: str = "") -> dict:
         "son_lleuger_min":        round((daily.get("lightSleepSeconds") or 0) / 60),
         "son_rem_min":            round((daily.get("remSleepSeconds") or 0) / 60),
         "despertes_min":          round((daily.get("awakeSleepSeconds") or 0) / 60),
-        "puntuacio_son":          daily.get("sleepScores", {}).get("overall", {}).get("value") if isinstance(daily.get("sleepScores"), dict) else daily.get("sleepScore"),
+        "puntuacio_son":          (daily.get("sleepScores") or {}).get("overall", {}).get("value") if isinstance(daily.get("sleepScores"), dict) else None,
         "spo2_mig":               daily.get("averageSpO2Value"),
         "freq_respiratoria_mig":  daily.get("averageRespirationValue"),
-        "hrv_nocturn":            daily.get("avgOvernightHrv"),
+        "hrv_nocturn":            raw.get("avgOvernightHrv"),
+        "fc_mig_son":             daily.get("avgHeartRate"),
+        "spo2_minim":             daily.get("lowestSpO2Value"),
         "perfil":                 profile_context(),
     }
     result["total_son_hores"] = round(result["total_son_min"] / 60, 1)
@@ -161,12 +163,15 @@ def get_hrv(days: int = 7) -> dict:
 
     if raw and isinstance(raw, dict):
         hrv = raw.get("hrvSummary") or raw
+        baseline = hrv.get("baseline", {}) if isinstance(hrv.get("baseline"), dict) else {}
         result.update({
             "hrv_mig_setmanal":   hrv.get("weeklyAvg"),
-            "hrv_ultima_nit":     hrv.get("lastNight"),
-            "hrv_5dies_alt":      hrv.get("lastFive", {}).get("high") if isinstance(hrv.get("lastFive"), dict) else None,
-            "hrv_5dies_baix":     hrv.get("lastFive", {}).get("low") if isinstance(hrv.get("lastFive"), dict) else None,
+            "hrv_ultima_nit":     hrv.get("lastNightAvg"),
+            "hrv_5min_maxim":     hrv.get("lastNight5MinHigh"),
             "estat_hrv":          hrv.get("status"),
+            "feedback_hrv":       hrv.get("feedbackPhrase"),
+            "baseline_baix":      baseline.get("balancedLow"),
+            "baseline_alt":       baseline.get("balancedUpper"),
         })
 
     # Historial de son per HRV nocturn
@@ -196,16 +201,18 @@ def get_sleep_summary(days: int = 7) -> dict:
 
     for i in range(days):
         d = days_ago(i)
-        raw = safe_garmin(api.get_sleep_data, d, default={})
-        if raw:
-            daily = raw.get("dailySleepDTO") or raw
+        slp_raw = safe_garmin(api.get_sleep_data, d, default={})
+        if slp_raw:
+            daily = slp_raw.get("dailySleepDTO") or slp_raw
             mins = round((daily.get("sleepTimeSeconds") or 0) / 60)
             if mins > 0:
+                scores = daily.get("sleepScores") or {}
+                score_val = scores.get("overall", {}).get("value") if isinstance(scores, dict) else None
                 records.append({
                     "data":        d,
                     "hores":       round(mins / 60, 1),
-                    "puntuacio":   daily.get("sleepScore"),
-                    "hrv":         daily.get("avgOvernightHrv"),
+                    "puntuacio":   score_val,
+                    "hrv":         slp_raw.get("avgOvernightHrv"),
                     "spo2":        daily.get("averageSpO2Value"),
                 })
 
@@ -356,8 +363,14 @@ def get_today_stats() -> dict:
             result["avui"]["body_battery_actual"] = vals[-1]
             result["avui"]["body_battery_maxim"]  = max(vals)
 
-    if hr and isinstance(hr, list) and hr:
-        result["avui"]["fc_repos"] = hr[-1].get("value") or hr[-1].get("restingHeartRate")
+    if hr and isinstance(hr, dict):
+        metrics = hr.get("allMetrics", {}).get("metricsMap", {})
+        rhr_list = metrics.get("WELLNESS_RESTING_HEART_RATE", [])
+        if rhr_list and isinstance(rhr_list, list):
+            result["avui"]["fc_repos"] = int(rhr_list[0].get("value", 0) or 0) or None
+    # Fallback: la FC en repòs també és a get_stats
+    if not result["avui"].get("fc_repos") and stats:
+        result["avui"]["fc_repos"] = stats.get("restingHeartRate")
 
     return result
 
@@ -450,17 +463,25 @@ def get_heart_rate(days: int = 7) -> dict:
     """
     api = get_garmin()
     start = days_ago(days)
-    raw = safe_garmin(api.get_rhr_day, today(), default=[])
-
-    if not raw or not isinstance(raw, list):
-        return {"error": "No hi ha dades de FC en repòs", "perfil": profile_context()}
-
     records = []
-    for r in raw:
-        val = r.get("value") or r.get("restingHeartRate")
-        d   = r.get("statisticsStartDate") or r.get("calendarDate")
-        if val and d:
-            records.append({"data": d, "fc_repos": val})
+    for i in range(days):
+        d = days_ago(i)
+        raw = safe_garmin(api.get_rhr_day, d, default={})
+        val = None
+        if raw and isinstance(raw, dict):
+            # Format real: allMetrics.metricsMap.WELLNESS_RESTING_HEART_RATE[0].value
+            metrics = raw.get("allMetrics", {}).get("metricsMap", {})
+            rhr_list = metrics.get("WELLNESS_RESTING_HEART_RATE", [])
+            if rhr_list and isinstance(rhr_list, list):
+                val = rhr_list[0].get("value")
+            # Fallback: camp directe
+            if val is None:
+                val = raw.get("restingHeartRate") or raw.get("value")
+        if val:
+            records.append({"data": d, "fc_repos": int(val)})
+
+    if not records:
+        return {"error": "No hi ha dades de FC en repòs", "perfil": profile_context()}
 
     if not records:
         return {"error": "Cap registre de FC en repòs", "perfil": profile_context()}
@@ -493,14 +514,42 @@ def get_vo2max() -> dict:
     result = {"perfil": profile_context()}
 
     if raw and isinstance(raw, dict):
-        ts = raw.get("trainingStatusDTO") or raw
+        # VO2max — dins mostRecentVO2Max.generic
+        vo2_block = raw.get("mostRecentVO2Max", {})
+        generic   = vo2_block.get("generic", {})
+        cycling   = vo2_block.get("cycling", {})
         result.update({
-            "vo2max":              ts.get("latestVO2Max") or ts.get("vo2MaxPreciseValue"),
-            "edat_fitness":        ts.get("fitnessAge"),
-            "llindar_lactat_fc":   ts.get("lactateThresholdHeartRate"),
+            "vo2max":              generic.get("vo2MaxPreciseValue") or generic.get("vo2MaxValue"),
+            "vo2max_cycling":      cycling.get("vo2MaxPreciseValue") or cycling.get("vo2MaxValue"),
+            "edat_fitness":        generic.get("fitnessAge"),
+        })
+        # Estat entrenament — dins mostRecentTrainingStatus
+        ts_block = raw.get("mostRecentTrainingStatus", {})
+        ts_map   = ts_block.get("latestTrainingStatusData", {})
+        # Agafem el primer dispositiu disponible
+        ts = next(iter(ts_map.values()), {}) if ts_map else {}
+        result.update({
             "estat_entrenament":   ts.get("trainingStatus"),
-            "readiness":           ts.get("trainingReadiness") or ts.get("trainingReadinessScore"),
-            "temps_recuperacio_h": ts.get("recoveryTime"),
+            "feedback_entrenament": ts.get("trainingStatusFeedbackPhrase"),
+            "esport_principal":    ts.get("sport"),
+        })
+        # Càrrega aguda/crònica — dins acuteTrainingLoadDTO
+        acute = ts.get("acuteTrainingLoadDTO", {})
+        result.update({
+            "carrega_aguda":       acute.get("dailyTrainingLoadAcute"),
+            "carrega_cronica":     acute.get("dailyTrainingLoadChronic"),
+            "ratio_carrega":       acute.get("dailyAcuteChronicWorkloadRatio"),
+            "acwr_estat":          acute.get("acwrStatus"),
+        })
+        # Balanç mensual — dins mostRecentTrainingLoadBalance
+        lb_block = raw.get("mostRecentTrainingLoadBalance", {})
+        lb_map   = lb_block.get("metricsTrainingLoadBalanceDTOMap", {})
+        lb = next(iter(lb_map.values()), {}) if lb_map else {}
+        result.update({
+            "carrega_aerobica_baixa":   lb.get("monthlyLoadAerobicLow"),
+            "carrega_aerobica_alta":    lb.get("monthlyLoadAerobicHigh"),
+            "carrega_anaerobica":       lb.get("monthlyLoadAnaerobic"),
+            "balanc_entrenament":       lb.get("trainingBalanceFeedbackPhrase"),
         })
 
     if USER_AGE:
@@ -542,22 +591,27 @@ def get_training_status() -> dict:
     result = {"perfil": profile_context()}
 
     if ts_raw and isinstance(ts_raw, dict):
-        ts = ts_raw.get("trainingStatusDTO") or ts_raw
-        result.update({
-            "readiness":              ts.get("trainingReadiness") or ts.get("trainingReadinessScore"),
-            "estat":                  ts.get("trainingStatus"),
-            "temps_recuperacio_h":    ts.get("recoveryTime"),
-            "llindar_lactat_fc":      ts.get("lactateThresholdHeartRate"),
-        })
+        # Estat entrenament — dins mostRecentTrainingStatus
+        ts_map = ts_raw.get("mostRecentTrainingStatus", {}).get("latestTrainingStatusData", {})
+        ts     = next(iter(ts_map.values()), {}) if ts_map else {}
+        acute  = ts.get("acuteTrainingLoadDTO", {})
 
-    # Extraiem càrrega d'entrenament de trainingStatusDTO (ja inclòs a ts_raw)
-    if ts_raw and isinstance(ts_raw, dict):
-        ts2 = ts_raw.get("trainingStatusDTO") or ts_raw
+        # Balanç mensual
+        lb_map = ts_raw.get("mostRecentTrainingLoadBalance", {}).get("metricsTrainingLoadBalanceDTOMap", {})
+        lb     = next(iter(lb_map.values()), {}) if lb_map else {}
+
         result.update({
-            "carrega_7dies":   ts2.get("weeklyTrainingLoad") or ts2.get("sevenDayLoad") or ts2.get("trainingLoad"),
-            "carrega_aguda":   ts2.get("acuteLoad") or ts2.get("acuteTrainingLoad"),
-            "carrega_cronica": ts2.get("chronicLoad") or ts2.get("chronicTrainingLoad"),
-            "ratio_carrega":   ts2.get("loadRatio") or ts2.get("trainingLoadRatio"),
+            "estat":                  ts.get("trainingStatus"),
+            "feedback":               ts.get("trainingStatusFeedbackPhrase"),
+            "esport":                 ts.get("sport"),
+            "carrega_aguda":          acute.get("dailyTrainingLoadAcute"),
+            "carrega_cronica":        acute.get("dailyTrainingLoadChronic"),
+            "ratio_carrega":          acute.get("dailyAcuteChronicWorkloadRatio"),
+            "acwr_estat":             acute.get("acwrStatus"),
+            "balanc":                 lb.get("trainingBalanceFeedbackPhrase"),
+            "carrega_aerobica_baixa": lb.get("monthlyLoadAerobicLow"),
+            "carrega_aerobica_alta":  lb.get("monthlyLoadAerobicHigh"),
+            "carrega_anaerobica":     lb.get("monthlyLoadAnaerobic"),
         })
 
     # Interpretació de la ràtio
